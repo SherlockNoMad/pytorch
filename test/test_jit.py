@@ -2926,7 +2926,7 @@ graph(%Ra, %Rb):
         s = str(torch._ops.ops.atan)
         self.assertRegex(s, r'torch.ops')
 
-    def test_profiler(self):
+    def test_profiler2(self):
         prev_opt = torch._C._get_graph_executor_optimize()
         torch._C._set_graph_executor_optimize(False)
 
