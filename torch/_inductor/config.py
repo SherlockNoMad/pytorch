@@ -42,6 +42,9 @@ epilogue_fusion_first = False
 # enable pattern match+replace optimizations
 pattern_matcher = True
 
+# replace common unoptimized attention call patterns with call to nn.function._scale_factor_dot_product_attention
+pattern_replace_scaled_dot_product_attention = False
+
 # enable reordering pass
 reordering = False
 

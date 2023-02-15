@@ -213,6 +213,7 @@ TORCH_LIBRARY_IMPL(aten, FuncTorchBatchedDecomposition, m) {
   OP_DECOMPOSE(prelu);
   OP_DECOMPOSE2(softmax, int);
   OP_DECOMPOSE(scaled_dot_product_attention);
+  OP_DECOMPOSE(_scale_factor_dot_product_attention);
   OP_DECOMPOSE(special_gammainc);
   OP_DECOMPOSE(special_gammaincc);
   OP_DECOMPOSE(special_logit);

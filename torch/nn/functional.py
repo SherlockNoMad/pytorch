@@ -4929,8 +4929,47 @@ Examples::
     https://arxiv.org/abs/2205.14135
 .. _Memory-Efficient Attention:
     https://github.com/facebookresearch/xformers
+    N: Batch size
+    ...: Any number of other batch dimensions (optional)
+    S: Source sequence length
+    L: Target sequence length
+    E: Embedding dimension
+""")
+
+_scale_factor_dot_product_attention = _add_docstr(
+    torch._C._nn._scale_factor_dot_product_attention, r"""
+Variant of scaled_dot_product_attention which allows to
+to specify scale factor explicitly.
+
+If the scale_factor is set to a different value than sqrt(embedding dim size),
+optimized implementations might not be chosen.
+
+See scaled_dot_product_attention for further details,
+
+Args:
+    query (Tensor): Query tensor; shape :math:`(N, ..., L, E)`.
+    key (Tensor): Key tensor; shape :math:`(N, ..., S, E)`.
+    value (Tensor): Value tensor; shape :math:`(N, ..., S, Ev)`.
+    attn_mask (optional Tensor): Attention mask; shape :math:`(N, ..., L, S)`. Two types of masks are supported.
+        A boolean mask where a value of True indicates that the element *should* take part in attention.
+        A float mask of the same type as query, key, value that is added to the attention score.
+    dropout_p (float): Dropout probability; if greater than 0.0, dropout is applied
+    is_causal (bool): If true, assumes causal attention masking and errors if both attn_mask and is_causal
+        are set.
+    scale_factor (float): Scale factor that the inputs to the softmax function are divided by. Typically set to sqrt(E)
+
+Returns:
+    output (Tensor): Attention output; shape :math:`(N, ..., L, Ev)`.
+
+Shape legend:
+    - :math:`N: \text{Batch size} ... : \text{Any number of other batch dimensions (optional)}`
+    - :math:`S: \text{Source sequence length}`
+    - :math:`L: \text{Target sequence length}`
+    - :math:`E: \text{Embedding dimension of the query and key}`
+    - :math:`Ev: \text{Embedding dimension of the value}`
 
 """)
+
 
 def _mha_shape_check(query: Tensor, key: Tensor, value: Tensor,
                      key_padding_mask: Optional[Tensor], attn_mask: Optional[Tensor], num_heads: int):

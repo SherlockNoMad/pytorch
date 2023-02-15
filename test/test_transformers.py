@@ -914,6 +914,154 @@ class TestTransformers(NNTestCase):
                              wrapper_set_seed(torch.nn.functional.scaled_dot_product_attention, *args, **kwargs),
                              (q, k, v, attn_mask, dropout_p))
 
+    @parametrize("input_dim,attn_mask_dim,is_causal",
+                 [(3, None, False), (3, 2, False), (3, 2, True), (3, 3, False), (3, 3, True),
+                  (4, None, False), (4, 2, False), (4, 2, True), (4, 4, False), (4, 4, True)],
+                 name_fn=lambda input_dim, attn_dim, is_causal: (
+                     f"{input_dim}D_input_dim_" + (
+                         f"{attn_dim}D_{'causal_' if is_causal else ''}attn_mask"
+                         if attn_dim is not None else "no_attn_mask")))
+    @parametrize("dropout_p", [0.0, 0.2, 0.5])
+    @parametrize("device", device_list)
+    @sdp_kernel(enable_flash=False)
+    def test_scale_factor_dot_product_attention(
+        self, device, input_dim, attn_mask_dim, is_causal, dropout_p
+    ):
+        def sfdp_ref(q, k, v, attn_mask=None, dropout_p=0.0, scale_factor=1.0):
+            q = q / scale_factor
+            # (B, Nt, E) x (B, E, Ns) -> (B, Nt, Ns)
+            if attn_mask is not None:
+                attn = torch.baddbmm(attn_mask, q, k.transpose(-2, -1))
+            else:
+                attn = torch.bmm(q, k.transpose(-2, -1))
+
+            attn = torch.nn.functional.softmax(attn, dim=-1)
+            if dropout_p > 0.0:
+                attn = torch.nn.functional.dropout(attn, p=dropout_p)
+            # (B, Nt, Ns) x (B, Ns, E) -> (B, Nt, E)
+            output = torch.bmm(attn, v)
+            return output
+
+        # TODO: Support cross-device / dtype testing properly when instantiate_device_type_tests() is used.
+        dtypes = [torch.double, torch.float]
+        for dtype in dtypes:
+
+            def rand_tensor(*shape):
+                return torch.randn(shape, device=device, dtype=dtype)
+
+            # This test compares python and C++ implementations of SDP.
+            N, N_prime, L, S, E = 5, 2, 4, 3, 6
+            for scale_factor in [math.sqrt(E), 0.125, 1.0]:
+                if input_dim == 3:
+                    query = rand_tensor(N, L, E)
+                    key = rand_tensor(N, S, E)
+                    value = rand_tensor(N, S, E)
+                elif input_dim == 4:
+                    query = rand_tensor(N, N_prime, L, E)
+                    key = rand_tensor(N, N_prime, S, E)
+                    value = rand_tensor(N, N_prime, S, E)
+                else:
+                    self.fail(f"Invalid input_dim {input_dim} encountered in SDP test")
+
+                attn_mask = None
+                if attn_mask_dim is not None:
+                    assert attn_mask_dim in [2, input_dim]
+                    mask_size = (
+                        (L, S)
+                        if attn_mask_dim == 2
+                        else ((N, L, S) if input_dim == 3 else (N, N_prime, L, S))
+                    )
+                    attn_mask = (
+                        torch.ones(mask_size, device=device, dtype=torch.bool).tril()
+                        if is_causal
+                        else torch.randint(
+                            0, 2, size=mask_size, device=device, dtype=torch.bool
+                        )
+                    )
+
+                with freeze_rng_state():
+                    # Python impl only supports float mask and 3D inputs.
+                    attn_mask_float = attn_mask
+                    if attn_mask_float is not None:
+                        attn_mask_float = torch.zeros_like(attn_mask, dtype=query.dtype)
+                        attn_mask_float.masked_fill_(
+                            attn_mask.logical_not(), float("-inf")
+                        )
+                    q, k, v = (
+                        query.view(-1, L, E),
+                        key.view(-1, S, E),
+                        value.view(-1, S, E),
+                    )
+                    a = attn_mask_float
+                    if a is not None and attn_mask_dim > 3:
+                        a = a.view(-1, L, S)
+                    expected = sfdp_ref(
+                        q,
+                        k,
+                        v,
+                        attn_mask=a,
+                        dropout_p=dropout_p,
+                        scale_factor=scale_factor,
+                    )
+                    if input_dim > 3:
+                        expected = expected.view(-1, N_prime, L, E)
+
+                with freeze_rng_state():
+                    if is_causal:
+                        # NB: Don't pass attn_mask here
+                        actual = torch.nn.functional._scale_factor_dot_product_attention(
+                            query, key, value, None, dropout_p, is_causal, scale_factor
+                        )
+
+                        # Error case: both explicit attn_mask and is_causal are set
+                        with self.assertRaisesRegex(
+                            RuntimeError,
+                            "Explicit attn_mask should not be set when is_causal=True",
+                        ):
+                            torch.nn.functional._scale_factor_dot_product_attention(
+                                query,
+                                key,
+                                value,
+                                attn_mask,
+                                dropout_p,
+                                is_causal,
+                                scale_factor,
+                            )
+                    else:
+                        actual = torch.nn.functional._scale_factor_dot_product_attention(
+                            query,
+                            key,
+                            value,
+                            attn_mask,
+                            dropout_p,
+                            is_causal,
+                            scale_factor,
+                        )
+
+                    self.assertEqual(actual, expected)
+
+                if attn_mask_dim is None:
+                    q = q.double().clone()
+                    k = k.double().clone()
+                    v = v.double().clone()
+                    q.requires_grad_()
+                    k.requires_grad_()
+                    v.requires_grad_()
+                    assert gradcheck(
+                        lambda *args, **kwargs: wrapper_set_seed(
+                            sfdp_ref, *args, **kwargs
+                        ),
+                        (q, k, v, attn_mask, dropout_p, scale_factor),
+                    )
+                    assert gradcheck(
+                        lambda *args, **kwargs: wrapper_set_seed(
+                            torch.nn.functional._scale_factor_dot_product_attention,
+                            *args,
+                            **kwargs,
+                        ),
+                        (q, k, v, attn_mask, dropout_p, is_causal, scale_factor),
+                    )
+
     @unittest.skipIf(TEST_WITH_CROSSREF, 'Fastpath not available with crossref')
     @torch.no_grad()
     def test_mask_check_fastpath(self):
@@ -1873,6 +2021,7 @@ class TestSDPA(NNTestCase):
             key = torch.randn(shape, dtype=torch.float16, device=device)
             value = torch.randn(shape, dtype=torch.float16, device=device)
             self.assertRaises(RuntimeError, lambda: F.scaled_dot_product_attention(query, key, value))
+
 
 # TODO: Replace this with instantiate_device_type_tests() to take advantage of test framework support for
 # cross device / dtype testing.

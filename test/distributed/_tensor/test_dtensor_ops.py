@@ -514,6 +514,7 @@ dtensor_fails = {
     skip("meshgrid", "list_of_tensors"),
     skip("meshgrid", "variadic_tensors"),
     skip("nn.functional.scaled_dot_product_attention"),
+    skip("nn.functional._scale_factor_dot_product_attention"),
     skip("nn.functional.softmin"),
     skip("nn.functional.embedding"),
     skip("nn.functional.embedding_bag"),

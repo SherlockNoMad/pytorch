@@ -391,6 +391,7 @@ TORCH_LIBRARY_IMPL(aten, Autocast, m) {
   KERNEL(rnn_relu_cell, lower_precision_fp)
   KERNEL(_scaled_dot_product_flash_attention, lower_precision_fp)
   KERNEL(scaled_dot_product_attention, lower_precision_fp)
+  KERNEL(_scale_factor_dot_product_attention, lower_precision_fp)
 
   // fp32
   KERNEL(acos, fp32)

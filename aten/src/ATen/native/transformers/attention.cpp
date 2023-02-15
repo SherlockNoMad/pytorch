@@ -809,10 +809,11 @@ Tensor scaled_dot_product_attention(
   }
 }
 
-std::tuple<Tensor, Tensor> _scaled_dot_product_attention_math(
+std::tuple<Tensor, Tensor> _scale_factor_dot_product_attention_math(
         const Tensor& query_, const Tensor& key, const Tensor& value,
         const c10::optional<Tensor>& attn_mask_, double dropout_p, bool is_causal,
-        const c10::optional<Tensor>& dropout_mask) {
+        const c10::optional<Tensor>& dropout_mask,
+        const Scalar &scale_factor ) {
   C10_LOG_API_USAGE_ONCE("torch.sdpa.math_fallback");
   if (query_.is_nested() || key.is_nested() || value.is_nested()) {
     TORCH_CHECK(
@@ -825,7 +826,7 @@ std::tuple<Tensor, Tensor> _scaled_dot_product_attention_math(
 
     // Scale q,k before matmul for stability see https://tinyurl.com/sudb9s96 for math
     const auto embed_size = SymFloat(query_.sym_size(-1));
-    const auto scaling_factor = embed_size.sqrt().sqrt();
+    const auto scaling_factor = scale_factor.toSymFloat().sqrt(); // sqrt taken again. scale_factor is already sqrt(embedding_dim)
     const auto query = query_ / scaling_factor;
     if (is_causal) {
         TORCH_CHECK(!attn_mask.has_value(),
@@ -865,6 +866,82 @@ std::tuple<Tensor, Tensor> _scaled_dot_product_attention_math(
     }
 
     return std::make_tuple(at::matmul(attn, value), attn);
+}
+
+
+std::tuple<Tensor, Tensor> _scaled_dot_product_attention_math(
+        const Tensor& query_, const Tensor& key, const Tensor& value,
+        const c10::optional<Tensor>& attn_mask_, double dropout_p, bool is_causal,
+        const c10::optional<Tensor>& dropout_mask) {
+  const auto embed_size = SymFloat(query_.sym_size(-1));
+  const auto scale_factor = Scalar(embed_size.sqrt());
+  return at::native::_scale_factor_dot_product_attention_math(
+          query_,
+          key,
+          value,
+          attn_mask_,
+          dropout_p,
+          is_causal,
+          dropout_mask,
+          scale_factor);
+}
+
+
+
+// Computes dot product attention with a custom scaling factor on query, key and value tensors, using
+// an optional attention mask if passed, and applying dropout if a probability
+// greater than 0.0 is specified.
+//
+// Args:
+//     query (Tensor): Query tensor; shape (N, ..., L, E)
+//     key (Tensor): Key tensor; shape (N, ..., S, E)
+//     value (Tensor): Value tensor; shape (N, ..., S, E)
+//     attn_mask (optional Tensor): Attention mask; shape (N, ..., L, S) or (L, S). Currently, only a boolean mask
+//         is supported, where a value of True indicates that the element *should* take part in attention.
+//     dropout_p (float): Dropout probability; if greater than 0.0, dropout is applied
+//     need_attn_weights (bool): If true, the second return value will contain the attention weights used;
+//         otherwise, the second return value is unspecified
+//     is_causal (bool): If true, assumes causal attention masking; for this case, attn_mask should not be set.
+//         TODO: Consider removing this flag before promoting this function to the public API. It's possible
+//         to get specialized support for causal masks (and other types of masking e.g. local attention / block
+//         sparse masks) via tensor subclassing, allowing for a leaner API.
+//
+// Returns a tuple containing:
+//     output (Tensor): Attention output; shape (N, ..., L, E)
+//     attn_weights (Tensor): Attention weighting; shape (N, ..., L, S)
+//
+// Shape legend:
+//     N: Batch size
+//     ...: Any number of other batch dimensions (optional)
+//     S: Source sequence length
+//     L: Target sequence length
+//     E: Embedding dimension
+Tensor _scale_factor_dot_product_attention(
+    const Tensor& query_,
+    const Tensor& key,
+    const Tensor& value,
+    const c10::optional<Tensor>& attn_mask_,
+    double dropout_p,
+    bool is_causal,
+    const Scalar &scale_factor ) {
+  const auto embed_size = SymFloat(query_.sym_size(-1));
+  const auto default_scale_factor = Scalar(embed_size.sqrt());
+  if (!embed_size.is_symbolic() &&
+      !(scale_factor.isSymFloat() && scale_factor.toSymFloat().is_symbolic()) &&
+      !(scale_factor.isSymInt() && scale_factor.toSymInt().is_symbolic()) &&
+      fabs(scale_factor.toDouble()-default_scale_factor.toDouble())>1.e-8) {
+    return std::get<0>(at::native::_scale_factor_dot_product_attention_math(
+            query_,
+            key,
+            value,
+            attn_mask_,
+            dropout_p,
+            is_causal,
+            {},
+            scale_factor));
+  } else {
+    return at::native::scaled_dot_product_attention(query_, key, value, attn_mask_, dropout_p, is_causal);
+  }
 }
 
 Tensor triton_multi_head_attention(
