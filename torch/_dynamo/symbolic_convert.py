@@ -455,6 +455,7 @@ class InstructionTranslatorBase(Checkpointable[InstructionTranslatorGraphState])
     lineno: int
     mutated_closure_cell_contents: Set[str]
     kw_names: Optional[ConstantVariable]
+    make_cell_list: List[str]
 
     checkpoint: Optional[Tuple[Instruction, InstructionTranslatorGraphState]]
     random_calls: List[
@@ -1605,7 +1606,7 @@ class InstructionTranslatorBase(Checkpointable[InstructionTranslatorGraphState])
         # so that we know which contexts are currently active.
         if isinstance(self, InstructionTranslator):
             self.block_stack.append(
-                BlockStackEntry(id(exit), inst.target, self.real_stack_len(), ctx)
+                BlockStackEntry(id(exit), inst.target, len(self.stack), ctx)
             )
         else:
             # can't restore this while inlining
@@ -1613,6 +1614,12 @@ class InstructionTranslatorBase(Checkpointable[InstructionTranslatorGraphState])
 
         self.push(exit)
         self.push(ctx.enter(self))
+
+    def MAKE_CELL(self, inst):
+        self.make_cell_list.append(inst.arg)
+
+    def COPY_FREE_VARS(self, inst):
+        print("base COPY_FREE_VARS")
 
     def copy_graphstate(self) -> InstructionTranslatorGraphState:
         """Create a checkpoint of the current state by copying everything"""
@@ -1713,6 +1720,7 @@ class InstructionTranslatorBase(Checkpointable[InstructionTranslatorGraphState])
         self.block_stack = []
         self.lineno = code_options["co_firstlineno"]
         self.kw_names = None
+        self.make_cell_list = []
 
         # Properties of the input/output code
         self.instructions: List[Instruction] = instructions
@@ -1876,14 +1884,23 @@ class InstructionTranslator(InstructionTranslatorBase):
         # Python does not allow null to be an arg to a function, so
         # we remove nulls from the stack and restore them in the
         # prologue of the resume function
+
+        # sorted list of indices of nulls on the stack
+        print("resume stack:", self.stack)
         null_idxes: List[int] = []
         if sys.version_info >= (3, 11):
+            # find indices of NullVariables
+            for i, var in enumerate(self.stack):
+                if isinstance(var, NullVariable):
+                    null_idxes.append(i)
+            # generate bytecode to pop the nulls
+            null_cnt = 0
             for i, var in enumerate(reversed(self.stack)):
                 if isinstance(var, NullVariable):
-                    for j in range(2, i + 2 - len(null_idxes)):
+                    for j in range(2, i + 2 - null_cnt):
                         cg.append_output(create_instruction("SWAP", j))
-                    null_idxes.append(i + 1)
                     cg.extend_output(cg.pop_null())
+                    null_cnt += 1
 
         # we popped all nulls from the stack at runtime,
         # so we should not count NullVariables
@@ -2108,6 +2125,9 @@ class InliningInstructionTranslator(InstructionTranslatorBase):
     def LOAD_CLOSURE(self, inst):
         assert inst.argval in self.cell_and_freevars()
         self.push(self.closure_cells[inst.argval])
+
+    def COPY_FREE_VARS(self, inst):
+        print("inlined COPY_FREE_VARS")
 
     def replace_all(self, oldvar: VariableTracker, newvar: VariableTracker):
         newvar = super().replace_all(oldvar, newvar)

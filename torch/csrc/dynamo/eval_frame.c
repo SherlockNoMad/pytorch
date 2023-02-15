@@ -452,12 +452,10 @@ inline static void set_extra(PyCodeObject* code, CacheEntry* extra) {
   _PyCode_SetExtra((PyObject*)code, extra_index, extra);
 }
 
-#ifdef TORCHDYNAMO_DEBUG
 inline static const char* name(THP_EVAL_API_FRAME_OBJECT* frame) {
   DEBUG_CHECK(PyUnicode_Check(frame->f_code->co_name));
   return PyUnicode_AsUTF8(frame->f_code->co_name);
 }
-#endif
 
 static PyObject* call_guard_fail_hook(
     PyObject* hook,
@@ -554,8 +552,13 @@ inline static PyObject* eval_custom_code(
   DEBUG_NULL_CHECK(tstate);
   DEBUG_NULL_CHECK(frame);
   DEBUG_NULL_CHECK(code);
+  #if IS_PYTHON_3_11_PLUS
+  DEBUG_CHECK(ncells == frame->f_code->co_ncellvars);
+  DEBUG_CHECK(nfrees == frame->f_code->co_nfreevars);
+  #else
   DEBUG_CHECK(ncells == PyTuple_GET_SIZE(frame->f_code->co_cellvars));
   DEBUG_CHECK(nfrees == PyTuple_GET_SIZE(frame->f_code->co_freevars));
+  #endif
   DEBUG_CHECK(nlocals_new >= nlocals_old);
 
   PyFrameObject* shadow_obj = PyFrame_New(tstate, code, frame->f_globals, NULL);
@@ -571,10 +574,15 @@ inline static PyObject* eval_custom_code(
   #if IS_PYTHON_3_11_PLUS
   PyObject** fastlocals_old = frame->localsplus;
   PyObject** fastlocals_new = shadow->localsplus;
+  // NOTE: this may still not be correct, as it assumes that the new names/vars in
+  // the modified code object are always appended to the list of names/vars.
+  for (Py_ssize_t i = 0; i < frame->f_code->co_nlocalsplus; i++) {
+    Py_XINCREF(fastlocals_old[i]);
+    fastlocals_new[i] = fastlocals_old[i];
+  }
   #else
   PyObject** fastlocals_old = frame->f_localsplus;
   PyObject** fastlocals_new = shadow->f_localsplus;
-  #endif
 
   for (Py_ssize_t i = 0; i < nlocals_old; i++) {
     Py_XINCREF(fastlocals_old[i]);
@@ -585,6 +593,7 @@ inline static PyObject* eval_custom_code(
     Py_XINCREF(fastlocals_old[nlocals_old + i]);
     fastlocals_new[nlocals_new + i] = fastlocals_old[nlocals_old + i];
   }
+  #endif
 
   PyObject* result = eval_frame_default(tstate, shadow, throw_flag);
   Py_DECREF(shadow_obj);
@@ -614,14 +623,22 @@ static PyObject* _custom_eval_frame(
     THP_EVAL_API_FRAME_OBJECT* frame,
     int throw_flag,
     PyObject* callback) {
+  #if IS_PYTHON_3_11_PLUS
   DEBUG_TRACE(
-      "begin %s %s %i %i %i %i",
+      "begin %s %s %i %i",
+      name(frame),
+      PyUnicode_AsUTF8(frame->f_code->co_filename),
+      frame->f_code->co_firstlineno,
+      _PyInterpreterFrame_LASTI(frame));
+  #else
+  DEBUG_TRACE(
+      "begin %s %s %i %i %i",
       name(frame),
       PyUnicode_AsUTF8(frame->f_code->co_filename),
       frame->f_lineno,
       frame->f_lasti,
-      frame->f_iblock,
-      frame->f_executing);
+      frame->f_iblock);
+  #endif
   CacheEntry* extra = get_extra(frame->f_code);
   if (extra == SKIP_CODE || (callback == Py_False && extra == NULL)) {
     DEBUG_TRACE("skip %s", name(frame));
