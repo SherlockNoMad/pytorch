@@ -4,7 +4,6 @@ import functools
 import itertools
 import logging
 import operator
-import re
 import traceback
 from dataclasses import dataclass
 from typing import Any, Dict, List, NamedTuple, Optional, OrderedDict, Set, Union
@@ -56,6 +55,11 @@ from .variables.tensor import (
 )
 
 log = logging.getLogger(__name__)
+
+
+def _create_name(names: List[str]) -> str:
+    name = ".".join(names)
+    return name.replace(".", ">")
 
 
 class OutputGraphState(NamedTuple):
@@ -417,12 +421,7 @@ class OutputGraph(fx.Tracer, Checkpointable[OutputGraphState]):
                 # it already exists
                 return wrap_name(k)
 
-        # create a new unique name
-        name = "_".join(map(str, names))
-        # e.g. repalce abc.xyz[123].qkv with abc.xyz_123.qkv
-        name = re.sub(r"\[(\d+)\]", r"_\g<1>", name)
-        # e.g. replace abc.xyz_123.qkv with abc_xyz_123_qkv
-        name = re.sub(r"[^a-zA-Z0-9]", "_", name)
+        name = _create_name(list(map(str, names)))
 
         if not name or not name[0].isalpha():
             name = "sub" + name
