@@ -1,5 +1,6 @@
 #include <ATen/ATen.h>
 #include <ATen/cuda/CUDAConfig.h>
+#include <unordered_set>
 #if AT_CUDNN_ENABLED()
 
 #include <ATen/native/cudnn/Macros.h>
@@ -11,9 +12,11 @@
 #include <ATen/cuda/Sleep.h>
 #include <ATen/cuda/detail/CUDAHooks.h>
 #include <ATen/cuda/jiterator.h>
+#include <c10/core/StorageImpl.h>
 #include <c10/cuda/CUDACachingAllocator.h>
 #include <c10/cuda/CUDAFunctions.h>
 #include <ATen/cuda/CUDAGraphsUtils.cuh>
+
 #ifdef USE_NCCL
 #include <torch/csrc/cuda/python_nccl.h>
 #endif
@@ -1039,16 +1042,21 @@ static void registerCudaPluggableAllocator(PyObject* module) {
       m, "_cuda_CUDAAllocator_AllocatorState");
 
   m.def("_cuda_getCheckpointState", [](int device, c10::cuda::MempoolId_t id) {
-    return c10::cuda::CUDACachingAllocator::get()->getCheckpointState(
-        device, id);
+    return c10::cuda::CUDACachingAllocator::getCheckpointState(device, id);
   });
 
   m.def(
       "_cuda_setCheckpointState",
       [](int device,
-         std::shared_ptr<c10::cuda::CUDACachingAllocator::AllocatorState> pps) {
-        return c10::cuda::CUDACachingAllocator::get()->setCheckpointPoolState(
-            device, pps);
+         std::shared_ptr<c10::cuda::CUDACachingAllocator::AllocatorState> pps,
+         std::vector<at::Tensor> stale_tensors) {
+        // Could pass in Storage Pointers instead
+        std::set<c10::StorageImpl*> ptrs;
+        for (const auto& ten : stale_tensors) {
+          ptrs.insert(ten.storage().unsafeGetStorageImpl());
+        }
+        return c10::cuda::CUDACachingAllocator::setCheckpointPoolState(
+            device, pps, ptrs);
       });
 }
 
