@@ -19,14 +19,24 @@ from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
 from ctypes import cdll
 from threading import Thread
 from time import sleep, time
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Tuple
 
 import torch
 
+from torch._dynamo.utils import counters
 from torch.hub import _Faketqdm, tqdm
 from torch.utils import cpp_extension
+
 from . import config, cuda_properties, exc
 from .utils import developer_warning
+
+if config.is_fbcode():
+    from .fb.logging import log_autotuning
+else:
+
+    def log_autotuning(*args, **kwargs):
+        pass
+
 
 LOCK_TIMEOUT = 600
 
@@ -56,40 +66,99 @@ logging.getLogger("filelock").setLevel(logging.DEBUG if config.debug else loggin
 
 @functools.lru_cache(None)
 def cache_dir():
-    return os.environ.get(
+    cache_dir = os.environ.get(
         "TORCHINDUCTOR_CACHE_DIR",
         f"{tempfile.gettempdir()}/torchinductor_{getpass.getuser()}",
     )
+    os.makedirs(cache_dir, exist_ok=True)
+    return cache_dir
 
 
-class DiskCache:
-    @staticmethod
+class PersistentCache:
+    def __init__(self):
+        self.local_cache_path = os.path.join(cache_dir(), "local_cache")
+        self.global_cache_path = config.global_cache_path
+
+        if torch.cuda.is_available():
+            self.dinfo = repr(
+                torch.cuda.get_device_properties(torch.cuda.current_device())
+            )
+
+    def get_local_cache(self):
+        if not os.path.isfile(self.local_cache_path):
+            return {}
+        with open(self.local_cache_path, "r") as local_cache_file:
+            local_cache = json.load(local_cache_file)
+        return local_cache
+
+    def update_local_cache(self, local_cache):
+        counters["inductor"]["select_algorithm_autotune_local_cache_updated"] += 1
+        write_atomic(self.local_cache_path, json.dumps(local_cache, indent=4))
+
     @functools.lru_cache(None)
-    def _subdir():
-        subdir = os.path.join(cache_dir(), "cached_tunings")
-        os.makedirs(subdir, exist_ok=True)
-        return subdir
+    def get_global_cache(self):
+        if self.global_cache_path is None or not os.path.isfile(self.global_cache_path):
+            return {}
+        with open(self.global_cache_path, "r") as global_cache_file:
+            global_cache = json.load(global_cache_file)
+        if self.dinfo not in global_cache:
+            global_cache[self.dinfo] = {}
+        return global_cache[self.dinfo]
 
-    @staticmethod
-    @functools.lru_cache(4096)
-    def _read_file(path):
-        with open(path, "r") as fd:
-            return json.loads(fd.read())
-
-    def __init__(self, unique_name):
-        super().__init__()
-        self.unique_name = unique_name
-
-    def lookup(self, key: Any, generate: Callable[[], Any]):
+    def lookup(
+        self,
+        choices,
+        name: str,
+        key: str,
+        generator: Callable[[Any], Tuple[Dict, bool]],
+    ):
         """
-        Check if we have already generated key, if not call generate()
-        to populate the cache.
+        Check to see if we have generated the given key and stored it in the
+        global cache. If so, retrieve the result from the global cache. If not,
+        check if the result is in the local cache. If so, retrieve the result
+        from the local cache. Otherwise, generate the result and store it in the
+        local cache if dictated by the generator function.
         """
-        path = os.path.join(self._subdir(), code_hash(self.unique_name + repr(key)))
-        if not os.path.exists(path):
-            value = generate()
-            write_atomic(path, json.dumps(value))
-        return self._read_file(path)
+        local_cache = self.get_local_cache()
+        global_cache = self.get_global_cache()
+        timings = {}
+
+        for choice in choices:
+            choice_hash = choice.hash_key()
+
+            # check the global cache first
+            if (
+                name in global_cache
+                and key in global_cache[name]
+                and choice_hash in global_cache[name][key]
+            ):
+                counters["inductor"]["select_algorithm_autotune_global_cache_hit"] += 1
+                log_autotuning(name, key, choice_hash, cached=True)
+                timings[choice] = global_cache[name][key][choice_hash]
+                continue
+            counters["inductor"]["select_algorithm_autotune_global_cache_miss"] += 1
+            log_autotuning(name, key, choice_hash, cached=False)
+
+            # then check the local cache
+            if name not in local_cache:
+                local_cache[name] = {}
+            if key not in local_cache[name]:
+                local_cache[name][key] = {}
+            if choice_hash not in local_cache[name][key]:
+                counters["inductor"]["select_algorithm_autotune_local_cache_miss"] += 1
+                if not config.max_autotune:
+                    # if we aren't autotuning, skip uncached choices
+                    continue
+                timing = generator(choice)
+                local_cache[name][key][choice_hash] = timing
+            else:
+                counters["inductor"]["select_algorithm_autotune_local_cache_hit"] += 1
+            timings[choice] = local_cache[name][key][choice_hash]
+
+        # make sure to update the local cache
+        self.update_local_cache(local_cache)
+
+        return timings
 
 
 def get_lock_dir():

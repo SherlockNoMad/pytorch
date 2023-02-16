@@ -96,6 +96,9 @@ compile_threads = (
     )
 )
 
+# autotuning global cache path
+global_cache_path = os.path.abspath("fb/global_cache") if is_fbcode() else None
+
 # If kernel is fused, the name is generated from the origin node op names
 # for larger kernels limit this
 kernel_name_max_ops = 10

@@ -16,8 +16,8 @@ torch.backends.cuda.matmul.allow_tf32 = False
 
 
 def patches(fn):
-    def skip_cache(self, key, generate):
-        return generate()
+    def skip_cache(self, choices, name, key, generate):
+        return {choice: generate(choice) for choice in choices}
 
     for patcher in [
         dynamo_config.patch(verbose=True),
@@ -52,7 +52,9 @@ class TestSelectAlgorithm(TestCase):
             torch.randn(16, device="cuda"),
         )
         # Autotuning checks correctness of each version
-        self.assertEqual(counters["inductor"]["select_algorithm_autotune"], 1)
+        self.assertGreaterEqual(
+            counters["inductor"]["select_algorithm_autotune_generated"], 1
+        )
         # It would be nice to assert this got fused into a single kernel, but that
         # only happens if we select a triton template (and not aten).
 
@@ -68,7 +70,9 @@ class TestSelectAlgorithm(TestCase):
             torch.randn(20, 16, device="cuda"),
         )
         # Autotuning checks correctness of each version
-        self.assertEqual(counters["inductor"]["select_algorithm_autotune"], 1)
+        self.assertGreaterEqual(
+            counters["inductor"]["select_algorithm_autotune_generated"], 1
+        )
 
     @patches
     def test_mm(self):
@@ -80,7 +84,9 @@ class TestSelectAlgorithm(TestCase):
             torch.randn(8, 32, device="cuda"),
             torch.randn(32, 8, device="cuda"),
         )
-        self.assertEqual(counters["inductor"]["select_algorithm_autotune"], 1)
+        self.assertGreaterEqual(
+            counters["inductor"]["select_algorithm_autotune_generated"], 1
+        )
 
     @patches
     def test_mm_skip(self):
@@ -93,7 +99,7 @@ class TestSelectAlgorithm(TestCase):
             torch.randn(32, 8, device="cuda", dtype=torch.float64),
         )
         # float64 not supported by tl.dot()
-        self.assertEqual(counters["inductor"]["select_algorithm_autotune"], 0)
+        self.assertEqual(counters["inductor"]["select_algorithm_autotune_generated"], 0)
 
     @patches
     def test_bmm(self):
@@ -106,7 +112,9 @@ class TestSelectAlgorithm(TestCase):
             torch.randn(2, 32, 8, device="cuda"),
         )
         # Autotuning checks correctness of each version
-        self.assertEqual(counters["inductor"]["select_algorithm_autotune"], 1)
+        self.assertGreaterEqual(
+            counters["inductor"]["select_algorithm_autotune_generated"], 1
+        )
 
     @patches
     def test_mm_not_even_k(self):
@@ -118,7 +126,9 @@ class TestSelectAlgorithm(TestCase):
             torch.randn(11, 22, device="cuda"),
             torch.randn(22, 33, device="cuda"),
         )
-        self.assertEqual(counters["inductor"]["select_algorithm_autotune"], 1)
+        self.assertGreaterEqual(
+            counters["inductor"]["select_algorithm_autotune_generated"], 1
+        )
 
     @patches
     def test_baddbmm(self):
@@ -132,7 +142,9 @@ class TestSelectAlgorithm(TestCase):
             torch.randn(2, 1, 8, device="cuda"),
         )
         # Autotuning checks correctness of each version
-        self.assertEqual(counters["inductor"]["select_algorithm_autotune"], 1)
+        self.assertGreaterEqual(
+            counters["inductor"]["select_algorithm_autotune_generated"], 1
+        )
 
     @patches
     def test_mm_plus_mm(self):
@@ -147,7 +159,9 @@ class TestSelectAlgorithm(TestCase):
             torch.randn(32, 32, device="cuda"),
         )
         # Autotuning checks correctness of each version
-        self.assertEqual(counters["inductor"]["select_algorithm_autotune"], 1)
+        self.assertGreaterEqual(
+            counters["inductor"]["select_algorithm_autotune_generated"], 1
+        )
 
 
 if __name__ == "__main__":

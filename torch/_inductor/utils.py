@@ -20,7 +20,7 @@ import sympy
 import torch
 from torch.fx.immutable_collections import immutable_dict, immutable_list
 
-from . import config, config as inductor_config
+from . import config
 from .cuda_properties import get_device_capability
 
 log = logging.getLogger(__name__)
@@ -483,8 +483,7 @@ def is_big_gpu(index):
 
 def use_triton_template(layout):
     return (
-        inductor_config.max_autotune
-        and layout.device.type == "cuda"
+        layout.device.type == "cuda"
         and layout.dtype in (torch.float16, torch.bfloat16, torch.float32)
         and is_big_gpu(layout.device.index or 0)
     )
