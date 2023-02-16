@@ -551,6 +551,37 @@ def forward(self, primals_1, primals_2, primals_3):
         self.verify_aot_autograd(f, create_inp(True), test_mutation=True, decompositions=decompositions)
         self.verify_aot_autograd(f, create_inp(False), test_mutation=True, decompositions=decompositions)
 
+    def test_batchnorm_inference(self):
+        inp = [
+            torch.ones(2, 5, 5, 5, requires_grad=True),
+            torch.ones(5, requires_grad=True),
+            torch.ones(5, requires_grad=True),
+            torch.ones(5),
+            torch.ones(5),
+        ]
+
+        m = torch.nn.BatchNorm2d(4, 4)
+        m.eval()
+        fw_graph_cell = [None]
+        inp = torch.ones(4, 4, 4, 4)
+        fw_graph_cell = [None]
+        compiled_m = aot_module(
+            m,
+            fw_compiler=partial(extract_graph, graph_cell=fw_graph_cell),
+            bw_compiler=nop,
+            keep_inference_input_mutations=True,
+        )
+        inp = torch.ones(4, 4, 4, 4)
+        out = compiled_m(inp)
+        # expectation: there are no copy_() calls in the decomposed batch norm when running under training=False (eval mode)
+        self.assertExpectedInline(fw_graph_cell[0].code.strip(), """\
+def forward(self, primals_1, primals_2, primals_3, primals_4, primals_5, primals_6):
+    _native_batch_norm_legit_no_training = torch.ops.aten._native_batch_norm_legit_no_training.default(primals_6, primals_1, primals_2, primals_3, primals_4, 0.1, 4.0);  primals_2 = None
+    getitem = _native_batch_norm_legit_no_training[0]
+    getitem_1 = _native_batch_norm_legit_no_training[1]
+    getitem_2 = _native_batch_norm_legit_no_training[2];  _native_batch_norm_legit_no_training = None
+    return [getitem, primals_3, primals_6, getitem_2, primals_1, primals_4, getitem_1]""")  # noqa: B950
+
     @patch("functorch.compile.config.use_fake_tensor", True)
     def test_input_output_view_simple(self):
         def f(a):
