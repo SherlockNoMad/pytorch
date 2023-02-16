@@ -1794,6 +1794,15 @@ class ExportTests(torch._dynamo.test_case.TestCase):
         dynamo_result = out_graph(inp)
         self.assertEqual(dynamo_result, m(inp))
 
+    def test_export_identity(self):
+        inp = torch.tensor([0.1, 0.1])
+        def func(x):
+            return x
+        torch._dynamo.reset()
+        exported, _ = torch._dynamo.export(func, inp)
+        dynamo_result = exported(inp)
+        self.assertTrue(torch._dynamo.utils.same(inp, dynamo_result))
+
 
 if __name__ == "__main__":
     from torch._dynamo.test_case import run_tests
